@@ -4,9 +4,9 @@ import io
 from msal import ConfidentialClientApplication
 import requests
 import time
-import os
-import time
 from cred import *
+from utils import *
+import pandas as pd
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
@@ -60,59 +60,16 @@ def test_get_msg_content():
     print(attachments)
     return {"message": 'ok'}
 
-"""
-Get the id of the .msg file in Email Library
-"""
-def get_weburl_item_id(web_url, drives_id,  headers):
-    file_name = web_url.split("/")[-1]
-    msg_item_url = f'{GRAPH_API_URL}/drives/{drives_id}/root:/{file_name}'
-    response = requests.get(msg_item_url, headers=headers)
-    item_id = response.json().get('id')
-    print("THE ITEM ID")
-    print(item_id)
-    return item_id
-
-def list_children(site_id, drive_id, item_id, headers):
-    url = f"{GRAPH_API_URL}/sites/{site_id}/drives/{drive_id}/items/{item_id}/children"
-    response = requests.get(url, headers=headers)
-    return response.json()
-
-def fetch_file_content(site_id, drive_id, file_id, headers):
-    url = f"{GRAPH_API_URL}/sites/{site_id}/drives/{drive_id}/items/{file_id}/content"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.content  # Return raw file content
-    else:
-        return None
-
-"""
-Using search in graphapi to recursively find the partial match of the file name in SharePoint folder
-"""
-def search_files_in_folder(site_id, drive_id, folder_id, query, headers):
-    url = f"{GRAPH_API_URL}/sites/{site_id}/drives/{drive_id}/items/{folder_id}/search(q='{query}')"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()  # Return the search results
-    else:
-        return None
-
-"""
-Check for matching extension for .docx and .pptx from the returned search results
-"""
-def find_file_in_subfolders(site_id, drive_id, parent_item_id, filename, headers):
-    search_results = search_files_in_folder(site_id, drive_id, parent_item_id, filename, headers)
-    if search_results:
-        print("THE SEARCH RESULTS")
-        print(search_results)
-        valid_extensions = ('.docx', '.pptx')
-        for item in search_results['value']:
-            # Check if the file name matches and has a valid extension
-            if item['name'].lower().startswith(filename.lower()) and item['name'].lower().endswith(valid_extensions):
-                return item  # Return the file item if found
-    return None  # Return None if the file is not found
-
 @app.route('/graph_call')
 def graph_call():
+
+    dv_filled_in_working_and_outgoing_no_dv_sheet_df = pd.DataFrame()
+    dv_filled_in_working_and_outgoing_has_filled_dv_sheet_df = pd.DataFrame()
+    dv_not_filled_in_working_outgoing_no_filled_dv_sheet_df = pd.DataFrame()
+    dv_not_filled_in_working_outgoing_no_dv_sheet_df = pd.DataFrame()
+    no_dv_in_working_or_outgoing_df = pd.DataFrame()
+    attachment_not_found_in_outgoing_folder_df = pd.DataFrame()
+
     token = session.get('access_token')
     if not token:
         return redirect(url_for('login'))
@@ -136,6 +93,12 @@ def graph_call():
 
     for i, item in enumerate(filtered_data):
         print("====Item processing===", i)
+        valid_extensions = ('.docx', '.pptx', '.pdf')
+
+
+        if i != 11 and i != 16:
+            continue
+
         try:
             web_url = item['webUrl']
             item_id = get_weburl_item_id(web_url=web_url, drives_id=EMAIL_LIBRARY_DRIVE_ID,headers=headers)
@@ -144,7 +107,12 @@ def graph_call():
             msg = extract_msg.Message(io.BytesIO(msg_response.content))
             attachments = msg.attachments
             print("Attachments")
+
             for attachment in attachments:
+
+                if not attachment.longFilename.lower().endswith(valid_extensions):
+                    print("not valid ext skipping: " + attachment.longFilename)
+                    continue
 
                 print(f"Attachment: {attachment.longFilename}")
                 attachemnt_name = attachment.longFilename
@@ -152,15 +120,68 @@ def graph_call():
                 attachment_name_without_extension = attachment_name_without_extension.strip()
 
                 print("FINDING:", attachment_name_without_extension)
-                file = find_file_in_subfolders(site_id=SITE_ID, drive_id=TASK_01_DRIVE_ID, parent_item_id=TASK_01_WORKING_FILES_ID, filename=attachment_name_without_extension, headers=headers)
 
-                if file:
-                    print(f"File found: {file['name']}")
-                else:
-                    print("File not found")
+                for i, task_folder in enumerate(TASK_FOLDERS):
+                    task_drive_id = task_folder['task_drive_id']
+                    task_working_folder_id = task_folder['working_folder_id']
+                    task_outgoing_folder_id = task_folder['outgoing_folder_id']
+                    
+                    print("Scanning working folder")
+                    working_folder_statuses = DV_sheet_exists_status(headers=headers,
+                                           task_drive_id=task_drive_id,
+                                           task_folder_id=task_working_folder_id,
+                                           attachment_name_without_extension=attachment_name_without_extension)    
+
+                    if working_folder_statuses['is_file_exists']:
+                        print("Working folder file exists")
+                        break
+
+                for i, task_folder in enumerate(TASK_FOLDERS):
+                    task_drive_id = task_folder['task_drive_id']
+                    task_working_folder_id = task_folder['working_folder_id']
+                    task_outgoing_folder_id = task_folder['outgoing_folder_id']
+
+                    print("Scanning outgoing folder")
+                    outgoing_folder_statuses = DV_sheet_exists_status(
+                        headers=headers,
+                        task_drive_id=task_drive_id,
+                        task_folder_id=task_outgoing_folder_id,
+                        attachment_name_without_extension=attachment_name_without_extension) 
+
+                    if outgoing_folder_statuses['is_file_exists']:
+                        print("Outgoing folder file exists")
+                        break
+                
+                print("==========RESULTS===========")
+                print("Working folder statuses")
+                print(working_folder_statuses)
+                print("Outgoing folder statuses")
+                print(outgoing_folder_statuses)
+
+                if not working_folder_statuses['is_file_exists'] or not outgoing_folder_statuses['is_file_exists']:
+                    no_dv_in_working_or_outgoing_df = attachment_not_found_in_outgoing_folder_df.append({
+                        "Attachment Name": attachemnt_name,
+                        "Working Folder Exists": working_folder_statuses['is_file_exists'],
+                        "Outgoing Folder Exists": outgoing_folder_statuses['is_file_exists']
+                    }, ignore_index=True)
+
+                if working_folder_statuses['is_file_exists'] or not outgoing_folder_statuses['is_file_exists']:
+                    attachment_not_found_in_outgoing_folder_df = attachment_not_found_in_outgoing_folder_df.append({
+                        "Attachment Name": attachemnt_name,
+                        "Working Folder Exists": working_folder_statuses['is_file_exists'],
+                        "Outgoing Folder Exists": outgoing_folder_statuses['is_file_exists']
+                    }, ignore_index=True)
 
         except Exception as e:
             print("An error occured processing: ", e)
+            
+
+    with pd.ExcelWriter("QA_Automation_Output.xlsx", engine="xlsxwriter") as writer:
+        # Separate data based on condition and write to different sheetz
+
+        # Write each DataFrame to a different worksheet
+        no_dv_in_working_or_outgoing_df.to_excel(writer, sheet_name="5_no_dv_in_working_or_outgoing", index=False)
+        attachment_not_found_in_outgoing_folder_df.to_excel(writer, sheet_name="6_no_outgoing_copy", index=False)
 
     return filtered_data
     

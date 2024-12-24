@@ -2,3 +2,5 @@ cred.py
 venv
 Jupyter_snippets
 temp
+__pycache__
+*.xlsx
