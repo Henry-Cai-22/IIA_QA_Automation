@@ -123,7 +123,7 @@ def handle_checking_dv_in_docx_file(working_msg_response, response_dict):
     namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     text_elements = tree.xpath("//w:t", namespaces=namespaces)
     content = "\n".join([element.text for element in text_elements if element.text])
-    print(content) 
+    # print(content) 
 
     if "Document Verification" in content:
         print("DV Sheet found in Working Folder")
@@ -296,6 +296,12 @@ def run_qa_automation_processing(drives_url, headers):
             print("Attachments")
 
             for attachment in attachments:
+
+                print("THE ATTACHEMNT: ", attachment.longFilename)
+
+                if not attachment.longFilename:
+                    print("No filename skipping")
+                    continue
 
                 if not attachment.longFilename.lower().endswith(valid_extensions):
                     print("not valid ext skipping: " + attachment.longFilename)
