@@ -2,12 +2,14 @@ from cred import *
 import requests
 from lxml import etree
 import zipfile
+from pptx import Presentation
 import time
 import os
 import io
 import pandas as pd
 import extract_msg
 import traceback
+import re
 
 """
 utils.py
@@ -47,7 +49,7 @@ TASK_FOLDERS = [
     },
 ]
 
-FILE_OUTPUT_NAME = "QA_Automation_Output.xlsx"
+FILE_OUTPUT_NAME = "QA_Automation_Output_12-30.xlsx"
 """
 Get the id of the .msg file in Email Library
 """
@@ -106,11 +108,16 @@ def find_file_in_subfolders(site_id, drive_id, parent_item_id, filename, headers
     return None  # Return None if the file is not found
 
 
+# Function to check if a text is likely a name (first letter capitalized and at least two words)
+def is_name(text):
+    # Check for common names with at least two words, each starting with a capital letter
+    return bool(re.match(r'^[A-Z][a-z]+(?: [A-Z][a-z]+)*$', text))
+
 """
 Check for the presence of DV sheet in the DOCX file
 """
-def handle_checking_dv_in_docx_file(working_msg_response, response_dict):
-    doc = io.BytesIO(working_msg_response.content)
+def handle_checking_dv_in_docx_file(msg_response, response_dict):
+    doc = io.BytesIO(msg_response.content)
     with zipfile.ZipFile(doc) as docx_zip:
         xml_content = docx_zip.read('word/document.xml')
     
@@ -122,7 +129,8 @@ def handle_checking_dv_in_docx_file(working_msg_response, response_dict):
     tree = etree.XML(xml_content)
     namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     text_elements = tree.xpath("//w:t", namespaces=namespaces)
-    content = "\n".join([element.text for element in text_elements if element.text])
+
+    content = [element.text for element in text_elements if element.text]
     # print(content) 
 
     if "Document Verification" in content:
@@ -131,22 +139,76 @@ def handle_checking_dv_in_docx_file(working_msg_response, response_dict):
 
         for field in target_fields:
             for idx, text in enumerate(content):
-        
-                # Check if the current text is one of the target fields
                 if field in text:
-                    # Check the next element or the surrounding text (if any) to see if it's the person's name
-                    # For simplicity, check the next text in the list after the field text
-                    next_text = content[idx + 1] if idx + 1 < len(content) else None
-                    
-                    # Print field and next text (for inspection)
-                    #print(f"Field: {field}, Next Text: {next_text}")
+                    # Look for the next relevant text (skip non-relevant ones like 'Filename' or 'Description')
+                    next_text = None
+                    for i in range(idx + 1, len(content)):
+                        if content[i] not in target_fields and content[i].strip() != "" and content[i] not in ["Filename", "Description"]:
+                            next_text = content[i]
+                            break
 
-                    # You can add custom logic here to check if the next text is a name (e.g., by matching patterns)
-                    if next_text and "Name" in next_text:
+                    # Check if the next text is a likely name
+                    if next_text and is_name(next_text):
                         print(f"Detected name after '{field}': {next_text}")
                         response_dict["is_dv_sheet_filled"] = True
+                    else:
+                        print(f"nothing detected after '{field}'")
+
     else:
         print("No DV Sheet in Working Folder")
+
+
+
+def handle_checking_dv_in_pptx_file(msg_response, response_dict):
+    presentation = Presentation(io.BytesIO(msg_response.content))
+    all_text = ""
+
+    # Iterate through slides and extract text from all shapes, including tables
+    for slide in presentation.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                all_text += shape.text + "\n"
+            elif shape.has_table:
+                table = shape.table
+                for row in table.rows:
+                    for cell in row.cells:
+                        all_text += cell.text + "\n"
+    
+    target_fields = [
+        "Signature", "Filename", "Description", 
+        "Prepared by", "Checked by", "Approved by", "Name"
+    ]
+
+    
+    if "Document Verification" in all_text:
+        print("DV Sheet found in Presentation")
+        response_dict["is_dv_sheet_exists"] = True
+
+        lines = all_text.split('\n')
+        for field in target_fields:
+            detected = False
+            for i, line in enumerate(lines):
+                if field in line:
+                    # Look for the next relevant text (skip non-relevant ones like 'Filename' or 'Description')
+                    next_text = None
+                    for j in range(i + 1, len(lines)):
+                        if lines[j].strip() and lines[j].strip() not in target_fields and lines[j].strip() not in ["Filename", "Description"]:
+                            next_text = lines[j].strip()
+                            break
+
+                    # Check if the next text is a likely name
+                    if next_text:
+                        if is_name(next_text):
+                            print(f"Detected name after '{field}': {next_text}")
+                            response_dict["is_dv_sheet_filled"] = True
+                            detected = True
+                            break
+
+            if not detected:
+                print(f"nothing detected after '{field}'")
+    else:
+        print("No DV Sheet in Presentation")
+
 
 """
 Returns the following statuses in an dictionary
@@ -163,7 +225,7 @@ example result
 }
 
 """
-def DV_sheet_exists_status(headers, 
+def handle_DV_sheet_exists_status(headers, 
                            task_drive_id,
                            task_folder_id,
                            attachment_name_without_extension):
@@ -182,16 +244,17 @@ def DV_sheet_exists_status(headers,
         print("File not found")
         return response_dict
     
-    working_item_content_url  = f'{GRAPH_API_URL}/drives/{file["parentReference"]["driveId"]}/items/{file["id"]}/content'
-    working_msg_response = requests.get(working_item_content_url, headers=headers)
+    item_content_url  = f'{GRAPH_API_URL}/drives/{file["parentReference"]["driveId"]}/items/{file["id"]}/content'
+    msg_response = requests.get(item_content_url, headers=headers)
 
     file_extension = os.path.splitext(file['name'])[1].lower()
 
     if file_extension == '.pptx':
         print("The file is a PPTX.")
+        handle_checking_dv_in_pptx_file(msg_response=msg_response, response_dict=response_dict)
     elif file_extension == '.docx':
         print("The file is a DOCX.")
-        handle_checking_dv_in_docx_file(working_msg_response=working_msg_response, response_dict=response_dict)
+        handle_checking_dv_in_docx_file(msg_response=msg_response, response_dict=response_dict)
     else:
         print("The file is neither a pptx nor a DOCX.")
     
@@ -275,6 +338,7 @@ def run_qa_automation_processing(drives_url, headers):
         valid_extensions = ('.docx', '.pptx', '.pdf')
 
 
+        # DEBUG REMOVE LATER. PURPOSE to only test specific items
         if i != 11 and i != 16 and i != 17:
             continue
 
@@ -319,7 +383,7 @@ def run_qa_automation_processing(drives_url, headers):
                     task_working_folder_id = task_folder['working_folder_id']
                     
                     print("Scanning working folder")
-                    working_folder_statuses = DV_sheet_exists_status(headers=headers,
+                    working_folder_statuses = handle_DV_sheet_exists_status(headers=headers,
                                            task_drive_id=task_drive_id,
                                            task_folder_id=task_working_folder_id,
                                            attachment_name_without_extension=attachment_name_without_extension)    
@@ -333,7 +397,7 @@ def run_qa_automation_processing(drives_url, headers):
                     task_outgoing_folder_id = task_folder['outgoing_folder_id']
 
                     print("Scanning outgoing folder")
-                    outgoing_folder_statuses = DV_sheet_exists_status(
+                    outgoing_folder_statuses = handle_DV_sheet_exists_status(
                         headers=headers,
                         task_drive_id=task_drive_id,
                         task_folder_id=task_outgoing_folder_id,
