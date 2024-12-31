@@ -77,14 +77,57 @@ def test_get_msg_content():
         print(f"Attachment: {attachment.longFilename}")
         attachment_data = attachment.data
 
-
     print(attachments)
     return {"message": 'ok'}
-
 
 """
 Get list of internal members from SharePoint list to use find filter out internal members with @HSR account
 """
 @routes.route('/list_internal_members')
 def list_internal_members():
-    return "TODO: Implement this route"
+    token = session.get('access_token')
+    if not token:
+        return redirect(url_for('debug_routes.login'))
+    headers = {'Authorization': 'Bearer ' + token}
+
+    drives_url = f'{GRAPH_API_URL}/sites/{SITE_ID}/lists/{INTERNAL_MEMBERS_LIST_ID}/items?$expand=fields'
+    response = requests.get(drives_url, headers=headers)
+    data = response.json()
+
+    internal_members = []
+
+    # Extract internal members names
+    for item in data['value']:
+        internal_members.append(item['fields']['Title'])
+    
+    drives_url_email_library  = f'{GRAPH_API_URL}/sites/{SITE_ID}/lists/{EMAIL_LIBRARY_LIST_ID}/items?$expand=fields&$filter=fields/Arup_AttachmentsCount gt 0&$top={5000}'
+    response = requests.get(drives_url_email_library, headers=headers)
+
+    data = response.json().get('value', [])
+
+    print("LENGTH OF DATA FROM EmAIL LIBRARY", len(data))
+
+    # filtered_data = [
+    #     item for item in data
+    #     if '@HSR' in item.get('fields', {}).get('Arup_To', '')
+    # ]
+
+    # print("LENGTH OF FILTERED DATA", len(filtered_data))
+
+    result_filted_data = []
+
+    for item in data:
+        email = item['fields'].get('Arup_To')
+        if not email:
+            continue
+
+        name = switch_name_format(email)
+        if name:
+            if name not in internal_members:
+                print("NAME NOT IN:", name)
+                result_filted_data.append(item)
+        # else:
+            # print(f"{email.strip()} is not a valid HSR email.")
+
+    print("LENGTH OF RESULT FILTERED DATA for non internal members", len(result_filted_data))
+    return {"result_filterd_data": result_filted_data}

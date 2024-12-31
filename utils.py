@@ -49,7 +49,7 @@ TASK_FOLDERS = [
     },
 ]
 
-FILE_OUTPUT_NAME = "QA_Automation_Output_12-30.xlsx"
+FILE_OUTPUT_NAME = "QA_Automation_Output_test.xlsx"
 """
 Get the id of the .msg file in Email Library
 """
@@ -98,8 +98,8 @@ Check for matching extension for .docx and .pptx from the returned search result
 def find_file_in_subfolders(site_id, drive_id, parent_item_id, filename, headers):
     search_results = search_files_in_folder(site_id, drive_id, parent_item_id, filename, headers)
     if search_results:
-        print("THE SEARCH RESULTS")
-        print(search_results)
+        # print("THE SEARCH RESULTS")
+        # print(search_results)
         valid_extensions = ('.docx', '.pptx')
         for item in search_results['value']:
             # Check if the file name matches and has a valid extension
@@ -261,6 +261,16 @@ def handle_DV_sheet_exists_status(headers,
     return response_dict
 
 
+def get_list_of_internal_members(headers):
+    internal_members = []
+    drives_url = f'{GRAPH_API_URL}/sites/{SITE_ID}/lists/{INTERNAL_MEMBERS_LIST_ID}/items?$expand=fields'
+    response = requests.get(drives_url, headers=headers)
+    data = response.json()
+
+    for item in data['value']:
+        # TODO: change to @HSR column field once created
+        internal_members.append(item['fields']['Title'])
+    return internal_members
 
 def process_dv_dataframes(working_folder_statuses, 
                           outgoing_folder_statuses, 
@@ -275,15 +285,40 @@ def process_dv_dataframes(working_folder_statuses,
         "Recipients": msg_info['recipients'],
         "Attachment Name": attachment_name,
         "Working Folder Exists": working_folder_statuses['is_file_exists'],
-        "Outgoing Folder Exists": outgoing_folder_statuses['is_file_exists'],
-        "Email Attachment Count": msg_info['attachment_count'],
+        "Outgoing Folder Exists": outgoing_folder_statuses['is_file_exists']
     }
+
+    # 1. DV sheet is in Working Folder, DV is filled out, copy in Outgoing Folder has no DV sheet 
+    if working_folder_statuses['is_file_exists'] and working_folder_statuses['is_dv_sheet_exists'] and working_folder_statuses['is_dv_sheet_filled'] \
+        and not outgoing_folder_statuses['is_dv_sheet_exists']:
+        dataframes['dv_filled_in_working_and_outgoing_no_dv_sheet_df'] = dataframes['dv_filled_in_working_and_outgoing_no_dv_sheet_df'].append(
+            df_data, ignore_index=True)
+        
+    # 2. DV sheet is in Working Folder, DV is filled out, copy in Outfolder Folder has completed DV (forgot to remove it) 
+    if working_folder_statuses['is_file_exists'] and working_folder_statuses['is_dv_sheet_exists'] and working_folder_statuses['is_dv_sheet_filled'] \
+        and outgoing_folder_statuses['is_dv_sheet_exists'] and outgoing_folder_statuses['is_dv_sheet_filled']:
+        dataframes['dv_filled_in_working_and_outgoing_has_filled_dv_sheet_df'] = dataframes['dv_filled_in_working_and_outgoing_has_filled_dv_sheet_df'].append(
+            df_data, ignore_index=True)
     
+    # 3. DV sheet is in Working Folder, DV is not filled out, copy in Outgoing Folder has blank DV sheet 
+    if working_folder_statuses['is_file_exists'] and working_folder_statuses['is_dv_sheet_exists'] and not working_folder_statuses['is_dv_sheet_filled'] \
+        and outgoing_folder_statuses['is_dv_sheet_exists'] and not outgoing_folder_statuses['is_dv_sheet_filled']:
+        dataframes['dv_not_filled_in_working_outgoing_no_filled_dv_sheet_df'] = dataframes['dv_not_filled_in_working_outgoing_no_filled_dv_sheet_df'].append(
+            df_data, ignore_index=True)
+        
+    # 4. DV sheet is in Working Folder, DV is not filled out, copy in Outgoing Folder has no DV sheet 
+    if working_folder_statuses['is_file_exists'] and working_folder_statuses['is_dv_sheet_exists'] and not working_folder_statuses['is_dv_sheet_filled'] \
+        and outgoing_folder_statuses['is_file_exists'] and not outgoing_folder_statuses['is_dv_sheet_exists']:
+        dataframes['dv_not_filled_in_working_outgoing_no_dv_sheet_df'] = dataframes['dv_not_filled_in_working_outgoing_no_dv_sheet_df'].append(
+            df_data, ignore_index=True)
+    
+    # 5. No DV sheet in either Working Folder or Outgoing Folder.  
     if not working_folder_statuses['is_file_exists'] or not outgoing_folder_statuses['is_file_exists']:
         dataframes['no_dv_in_working_or_outgoing_df'] = dataframes['no_dv_in_working_or_outgoing_df'].append(
             df_data, ignore_index=True)
 
-    if working_folder_statuses['is_file_exists'] or not outgoing_folder_statuses['is_file_exists']:
+    # 6. Attachment has no copy in any Outgoing Folder 
+    if not outgoing_folder_statuses['is_file_exists']:
         dataframes['attachment_not_found_in_outgoing_folder_df'] = dataframes['attachment_not_found_in_outgoing_folder_df'].append(
             df_data, ignore_index=True)
         
@@ -292,8 +327,11 @@ Run the QA Automation processing in the background
 """
 
 def run_qa_automation_in_background(drives_url, headers):
+    start_time = time.time()
     run_qa_automation_processing(drives_url=drives_url, headers=headers)
-
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"Execution time: {execution_time} seconds")
 
 """
 Run the QA Automation processing
@@ -329,18 +367,28 @@ def run_qa_automation_processing(drives_url, headers):
         if '@HSR' in item.get('fields', {}).get('Arup_To', '')
     ]
 
-    print(len(filtered_data))
-    # Output the filtered data
-    print(filtered_data[0])
+    result_filted_data = []
+    internal_members = get_list_of_internal_members(headers)
 
-    for i, item in enumerate(filtered_data):
+    for item in filtered_data:
+        email = item['fields'].get('Arup_To')
+        if not email:
+            continue
+
+        name = switch_name_format(email)
+        if name:
+            if name not in internal_members:
+                result_filted_data.append(item)
+
+    print("LENGHT OF RESULT FILTERED DATA for non internal members", len(result_filted_data))
+    for i, item in enumerate(result_filted_data[230:232]):
         print("====Item processing===", i)
         valid_extensions = ('.docx', '.pptx', '.pdf')
 
 
         # DEBUG REMOVE LATER. PURPOSE to only test specific items
-        if i != 11 and i != 16 and i != 17:
-            continue
+        # if i != 11 and i != 16 and i != 17:
+        #     continue
 
         try:
             web_url = item['webUrl']
@@ -360,6 +408,10 @@ def run_qa_automation_processing(drives_url, headers):
             print("Attachments")
 
             for attachment in attachments:
+
+                if "Acceptable_Use_Acknowledgement" in attachment.longFilename or "Acceptable Use Acknowledgement" in attachment.longFilename:
+                    print("Acceptable_Use_Acknowledgement skipping")
+                    continue
 
                 print("THE ATTACHEMNT: ", attachment.longFilename)
 
@@ -432,3 +484,14 @@ def run_qa_automation_processing(drives_url, headers):
 
     print(F"Process completed. Results saved to {FILE_OUTPUT_NAME}")
     return filtered_data
+
+
+"""
+Function to switch names from "Lastname, First@HSR" to "First Last"
+Won't be needed once the SP Project Staff list column has HSR emails to compare against the ones in Email Library
+"""
+def switch_name_format(email):
+    match = re.match(r"(\w+), (\w+)(?:\(.+\))?@HSR", email.strip())
+    if match:
+        return f"{match.group(2)} {match.group(1)}"
+    return None
