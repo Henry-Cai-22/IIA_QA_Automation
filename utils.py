@@ -524,7 +524,7 @@ def run_qa_automation_processing(drives_url, headers, refresh_token=None):
         try:
             # Try to read the existing sheet into a DataFrame
             existing_df = pd.read_excel(FILE_OUTPUT_NAME, sheet_name=sheet_name)
-        except ValueError:
+        except Exception as e:
             # If the sheet doesn't exist, create an empty DataFrame
             existing_df = pd.DataFrame()
         
@@ -536,10 +536,18 @@ def run_qa_automation_processing(drives_url, headers, refresh_token=None):
     #         sheet_name = sheet_names[df_name]
     #         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    with pd.ExcelWriter(FILE_OUTPUT_NAME, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-        for df_name, sheet_name in sheet_names.items():
-            dataframes[df_name].to_excel(writer, sheet_name=sheet_name, index=False)
-        
+    # Check if the file exists
+    if not os.path.exists(FILE_OUTPUT_NAME):
+        # Create a new Excel file
+        with pd.ExcelWriter(FILE_OUTPUT_NAME, engine='openpyxl') as writer:
+            for df_name, sheet_name in sheet_names.items():
+                dataframes[df_name].to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        # Append to the existing Excel file
+        with pd.ExcelWriter(FILE_OUTPUT_NAME, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            for df_name, sheet_name in sheet_names.items():
+                dataframes[df_name].to_excel(writer, sheet_name=sheet_name, index=False)
+            
     print(F"Process completed. Results saved to {FILE_OUTPUT_NAME}")
     df_error_logs = pd.DataFrame(error_logs)
 
