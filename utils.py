@@ -10,6 +10,7 @@ import pandas as pd
 import extract_msg
 import traceback
 import re
+from auth import *
 
 """
 utils.py
@@ -49,7 +50,7 @@ TASK_FOLDERS = [
     },
 ]
 
-FILE_OUTPUT_NAME = "QA_Automation_Output_test.xlsx"
+FILE_OUTPUT_NAME = "QA_Automation_Output.xlsx"
 """
 Get the id of the .msg file in Email Library
 """
@@ -58,8 +59,6 @@ def get_weburl_item_id(web_url, drives_id,  headers):
     msg_item_url = f'{GRAPH_API_URL}/drives/{drives_id}/root:/{file_name}'
     response = requests.get(msg_item_url, headers=headers)
     item_id = response.json().get('id')
-    print("THE ITEM ID")
-    print(item_id)
     return item_id
 
 """
@@ -324,19 +323,50 @@ def process_dv_dataframes(working_folder_statuses,
         
 """
 Run the QA Automation processing in the background
+Only used if Flask is used to run the QA Automation instead of the standalone script so that the frontend can return a response immediately
 """
-
-def run_qa_automation_in_background(drives_url, headers):
+def run_qa_automation_in_background(drives_url, headers, refresh_token=None):
     start_time = time.time()
-    run_qa_automation_processing(drives_url=drives_url, headers=headers)
+    run_qa_automation_processing(drives_url=drives_url, headers=headers, refresh_token=refresh_token)
     end_time = time.time()
     execution_time = end_time - start_time
     print(f"Execution time: {execution_time} seconds")
 
+
+# Function to log errors
+def log_error(item, error_message, error_logs):
+    msg_info = {
+        "item": item,
+        "error_message": error_message
+    }
+    error_logs.append(msg_info)
+
+
+# Function to loop through all sheets and add items in the 'attachments' column to an array
+def get_attachments_from_excel(file_path):
+    attachments = []
+    try:
+        # Load the Excel workbook
+        xls = pd.ExcelFile(file_path)
+        # Loop through each sheet in the workbook
+        for sheet_name in xls.sheet_names:
+            # Read the sheet into a DataFrame
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            
+            # Check if the 'attachments' column exists in the DataFrame
+            if 'Attachment Name' in df.columns:
+                # Add the items in the 'attachments' column to the list
+                attachments.extend(df['Attachment Name'].dropna().tolist())
+        
+        return attachments
+    except Exception as e:
+        return attachments
+
+
 """
 Run the QA Automation processing
 """
-def run_qa_automation_processing(drives_url, headers):
+def run_qa_automation_processing(drives_url, headers, refresh_token=None):
 
     dataframes = {
         'dv_filled_in_working_and_outgoing_no_dv_sheet_df': pd.DataFrame(),
@@ -380,11 +410,23 @@ def run_qa_automation_processing(drives_url, headers):
             if name not in internal_members:
                 result_filted_data.append(item)
 
+    # List to store error logs
+    error_logs = []
+
     print("LENGHT OF RESULT FILTERED DATA for non internal members", len(result_filted_data))
-    for i, item in enumerate(result_filted_data[230:232]):
+
+    # Retrieve previously process attachments from the output file if applicable to speed up processing by skipping the ones in the list.
+    cached_attachements_from_previous_output = get_attachments_from_excel(FILE_OUTPUT_NAME)
+
+    for i, item in enumerate(result_filted_data):
         print("====Item processing===", i)
         valid_extensions = ('.docx', '.pptx', '.pdf')
-
+        
+        # Get refresh token after every 30 items
+        if i >= 30 and i % 30 == 0:
+            refresh_token_updated, expires_in = refresh_user_token(refresh_token)
+            print("Renerated new token")
+            headers = {'Authorization': 'Bearer ' + refresh_token_updated}
 
         # DEBUG REMOVE LATER. PURPOSE to only test specific items
         # if i != 11 and i != 16 and i != 17:
@@ -405,15 +447,16 @@ def run_qa_automation_processing(drives_url, headers):
                 "attachment_count": len(msg.attachments)
             }
 
-            print("Attachments")
-
             for attachment in attachments:
 
-                if "Acceptable_Use_Acknowledgement" in attachment.longFilename or "Acceptable Use Acknowledgement" in attachment.longFilename:
+                if "Acceptable_Use_Acknowledgement" in attachment.longFilename or \
+                "Acceptable Use Acknowledgement" in attachment.longFilename:
                     print("Acceptable_Use_Acknowledgement skipping")
                     continue
 
-                print("THE ATTACHEMNT: ", attachment.longFilename)
+                if attachment.longFilename in cached_attachements_from_previous_output:
+                    print("Attachment already cached skipping")
+                    continue
 
                 if not attachment.longFilename:
                     print("No filename skipping")
@@ -427,8 +470,6 @@ def run_qa_automation_processing(drives_url, headers):
                 attachment_name = attachment.longFilename
                 attachment_name_without_extension = os.path.splitext(attachment_name)[0]
                 attachment_name_without_extension = attachment_name_without_extension.strip()
-
-                print("FINDING:", attachment_name_without_extension)
 
                 for i, task_folder in enumerate(TASK_FOLDERS):
                     task_drive_id = task_folder['task_drive_id']
@@ -474,16 +515,41 @@ def run_qa_automation_processing(drives_url, headers):
         except Exception as e:
             print("An error occured processing: ", e)
             traceback.print_exc()
+            log_error(item=item, error_message=e, error_logs=error_logs)
             
-            
+    
 
-    with pd.ExcelWriter(FILE_OUTPUT_NAME, engine="xlsxwriter") as writer:
-        for df_name, df in dataframes.items():
-            sheet_name = sheet_names[df_name]
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    # Loop through each DataFrame and add the new data
+    for df_name, sheet_name in sheet_names.items():
+        try:
+            # Try to read the existing sheet into a DataFrame
+            existing_df = pd.read_excel(FILE_OUTPUT_NAME, sheet_name=sheet_name)
+        except ValueError:
+            # If the sheet doesn't exist, create an empty DataFrame
+            existing_df = pd.DataFrame()
+        
+        # Combine the existing DataFrame with the new data
+        dataframes[df_name] = pd.concat([existing_df, dataframes[df_name]], ignore_index=True)
 
+    # with pd.ExcelWriter(FILE_OUTPUT_NAME, engine="xlsxwriter") as writer:
+    #     for df_name, df in dataframes.items():
+    #         sheet_name = sheet_names[df_name]
+    #         df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    with pd.ExcelWriter(FILE_OUTPUT_NAME, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+        for df_name, sheet_name in sheet_names.items():
+            dataframes[df_name].to_excel(writer, sheet_name=sheet_name, index=False)
+        
     print(F"Process completed. Results saved to {FILE_OUTPUT_NAME}")
-    return filtered_data
+    df_error_logs = pd.DataFrame(error_logs)
+
+
+
+    with pd.ExcelWriter(f'Errors_for_{FILE_OUTPUT_NAME}', engine="xlsxwriter") as writer:
+        df_error_logs.to_excel(writer, sheet_name='Error Logs', index=False)
+
+    print(f"Error logs saved to Errors_for_{FILE_OUTPUT_NAME}")
+    return "Completed processing"
 
 
 """

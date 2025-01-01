@@ -13,11 +13,8 @@ def index():
 @routes.route('/login')
 def login():
     client = ConfidentialClientApplication(
-        CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
+        client_id=CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     auth_url = client.get_authorization_request_url(SCOPE, redirect_uri=url_for('routes.authorized', _external=True))
-
-    print("AUTH URL")
-    print(auth_url)
     return redirect(auth_url)
 
 @routes.route(REDIRECT_PATH)
@@ -26,8 +23,10 @@ def authorized():
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     code = request.args.get('code')
     result = client.acquire_token_by_authorization_code(code, scopes=SCOPE, redirect_uri=url_for('routes.authorized', _external=True))
-    if 'access_token' in result:
+
+    if 'access_token' in result and 'refresh_token' in result:
         session['access_token'] = result['access_token']
+        session['refresh_token'] = result['refresh_token']
         return redirect(url_for('routes.graph_call'))
     return 'Login failed'
 
@@ -41,11 +40,12 @@ def graph_call():
     if not token:
         return redirect(url_for('routes.login'))
     
+    refresh_token = session.get('refresh_token')
     headers = {'Authorization': 'Bearer ' + token}
     drives_url  = f'{GRAPH_API_URL}/sites/{SITE_ID}/lists/{EMAIL_LIBRARY_LIST_ID}/items?$expand=fields&$filter=fields/Arup_AttachmentsCount gt 0&$top={TOP_EMAIL_LIBRARY_COUNT}'
     
     # Run QA Automation in background so that the frontend can return a response immediately
-    task_thread = threading.Thread(target=run_qa_automation_in_background, args=(drives_url, headers))
+    task_thread = threading.Thread(target=run_qa_automation_in_background, args=(drives_url, headers, refresh_token))
     task_thread.start()
 
     return "Running QA Automation in background. Once the process is completed, \
