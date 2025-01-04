@@ -1,13 +1,14 @@
 from flask import Blueprint, redirect, url_for, redirect, url_for, session, request
 from msal import ConfidentialClientApplication
 from cred import *
-from utils import *
+from utils.utils import *
 import threading
 
 routes = Blueprint('routes', __name__)
 
 @routes.route('/')
 def index():
+    print("Redirecting to login")
     return redirect(url_for('routes.login'))
 
 @routes.route('/login')
@@ -30,7 +31,6 @@ def authorized():
         return redirect(url_for('routes.graph_call'))
     return 'Login failed'
 
-
 """
 This route is used to call the QA Automation process in the background.
 """
@@ -45,8 +45,11 @@ def graph_call():
     drives_url  = f'{GRAPH_API_URL}/sites/{SITE_ID}/lists/{EMAIL_LIBRARY_LIST_ID}/items?$expand=fields&$filter=fields/Arup_AttachmentsCount gt 0&$top={TOP_EMAIL_LIBRARY_COUNT}'
     
     # Run QA Automation in background so that the frontend can return a response immediately
-    task_thread = threading.Thread(target=run_qa_automation_in_background, args=(drives_url, headers, refresh_token))
-    task_thread.start()
+    task_thread_a = threading.Thread(target=run_qa_automation_A_in_background, args=(drives_url, headers, refresh_token))
+    task_thread_a.start()
+
+    task_thread_b = threading.Thread(target=run_qa_automation_B_in_background, args=(drives_url, headers, refresh_token))
+    task_thread_b.start()
 
     return "Running QA Automation in background. Once the process is completed, \
 the results will be saved to an .xlsx file within this directory."

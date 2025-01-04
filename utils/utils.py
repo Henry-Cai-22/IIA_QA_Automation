@@ -1,3 +1,45 @@
+"""
+utils_a.py
+
+This module contains utility functions and constants used across the IIA QA Automation Python Script project. 
+
+
+=================================================================================================================
+A.
+Review the Email Library for cases we should log based on Email archive - start w/ attachments sent to HSR in Email Library 
+
+DV sheet is in Working Folder, DV is filled out, copy in Outgoing Folder has no DV sheet 
+
+DV sheet is in Working Folder, DV is filled out, copy in Outfolder Folder has completed DV (forgot to remove it) 
+
+DV sheet is in Working Folder, DV is not filled out, copy in Outgoing Folder has blank DV sheet 
+
+DV sheet is in Working Folder, DV is not filled out, copy in Outgoing Folder has no DV sheet 
+
+No DV sheet in either Working Folder or Outgoing Folder. 
+
+Attachment has no copy in any Outgoing Folder 
+
+Note that many Attachments are screened out 
+
+Recipient must be in hsr.ca.gov domain but NOT one of the internal team members with an hsr.ca.gov email 
+
+Only PDF, PPT and DOCX filetypes - review DOCX and PPT for the DV sheet 
+
+If PDF is attached alone, look for correspoding DOCX or PPT filename in Outgoing and Working folders 
+
+
+B.
+Review all files in Outgoing Folders to see if there is an email in Email Library that has an attachment that matches the filename.  
+
+Create an XL log of Outgoing files with no email . Include names of ppeople who worked on the file. 
+=================================================================================================================
+
+Constants:
+- TASK_FOLDERS: A list of dictionaries containing information about various task folders, including their names, drive IDs, working folder IDs, and outgoing folder IDs.
+- FILE_OUTPUT_NAME: The name of the Excel file where the QA Automation results will be saved.
+"""
+
 from cred import *
 import requests
 from lxml import etree
@@ -11,16 +53,6 @@ import extract_msg
 import traceback
 import re
 from auth import *
-
-"""
-utils.py
-
-This module contains utility functions and constants used across the IIA QA Automation Python Script project. 
-
-Constants:
-- TASK_FOLDERS: A list of dictionaries containing information about various task folders, including their names, drive IDs, working folder IDs, and outgoing folder IDs.
-- FILE_OUTPUT_NAME: The name of the Excel file where the QA Automation results will be saved.
-"""
 
 TASK_FOLDERS = [
     { "folder_name": "Task 01 - Renewable Energy", 
@@ -50,7 +82,8 @@ TASK_FOLDERS = [
     },
 ]
 
-FILE_OUTPUT_NAME = "QA_Automation_Output.xlsx"
+FILE_OUTPUT_NAME = "QA_Automation_Output-test.xlsx"
+FILE_OUTPUT_NAME_TASK_B = "QA_Automation_Missing_Email_Attachments_Output.xlsx"
 """
 Get the id of the .msg file in Email Library
 """
@@ -322,15 +355,179 @@ def process_dv_dataframes(working_folder_statuses,
             df_data, ignore_index=True)
         
 """
-Run the QA Automation processing in the background
-Only used if Flask is used to run the QA Automation instead of the standalone script so that the frontend can return a response immediately
+Run the QA Automation processing in the background for task A
 """
-def run_qa_automation_in_background(drives_url, headers, refresh_token=None):
+def run_qa_automation_A_in_background(drives_url, headers, refresh_token=None):
+    print("Running QA Automation A in the background...")
     start_time = time.time()
     run_qa_automation_processing(drives_url=drives_url, headers=headers, refresh_token=refresh_token)
     end_time = time.time()
     execution_time = end_time - start_time
-    print(f"Execution time: {execution_time} seconds")
+    print(f"Execution time: {execution_time} seconds for QA Automation A")
+
+"""
+Run the QA Automation processing in the background for task B
+"""
+def run_qa_automation_B_in_background(drives_url, headers, refresh_token):
+    print("Running QA Automation B in the background...")
+    start_time = time.time()
+    print("running task B")
+    run_qa_automation_processing_B(drives_url=drives_url, headers=headers, refresh_token=refresh_token)
+    print("finished task B")
+
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"Execution time: {execution_time} seconds for QA Automation B")
+
+def run_qa_automation_processing_B(drives_url, headers, refresh_token=None):
+
+    dataframes = {
+        'files_not_found_in_email_library': pd.DataFrame()
+    }
+    response = requests.get(drives_url, headers=headers)
+    data = response.json().get('value', [])
+    valid_extensions = ('.docx', '.pptx', '.pdf')
+
+    print("data length", len(data))
+    filtered_data = [
+        item for item in data
+        if '@HSR' in item.get('fields', {}).get('Arup_To', '')
+    ]
+
+    result_filted_data = []
+    internal_members = get_list_of_internal_members(headers)
+
+    for item in filtered_data:
+        email = item['fields'].get('Arup_To')
+        if not email:
+            continue
+
+        name = switch_name_format(email)
+        if name:
+            if name not in internal_members:
+                result_filted_data.append(item)
+
+    # List to store error logs
+    error_logs = []
+    attachments_from_email_library = []
+
+
+    print("LENGHT OF RESULT FILTERED DATA for non internal members", len(result_filted_data))
+
+
+    for i, item in enumerate(result_filted_data):
+        print("====Item processing===", i)
+        valid_extensions = ('.docx', '.pptx', '.pdf')
+        
+        # Get refresh token after every 30 items
+        if i >= 30 and i % 30 == 0:
+            refresh_token_updated, expires_in = refresh_user_token(refresh_token)
+            print("Renerated new token")
+            headers = {'Authorization': 'Bearer ' + refresh_token_updated}
+
+        try:
+            web_url = item['webUrl']
+            item_id = get_weburl_item_id(web_url=web_url, drives_id=EMAIL_LIBRARY_DRIVE_ID,headers=headers)
+            item_content_url  = f'{GRAPH_API_URL}/drives/{EMAIL_LIBRARY_DRIVE_ID}/items/{item_id}/content'
+            msg_response = requests.get(item_content_url, headers=headers)
+            msg = extract_msg.Message(io.BytesIO(msg_response.content))
+            attachments = msg.attachments
+
+            for attachment in attachments:
+
+                if not attachment.longFilename:
+                        print("No filename skipping")
+                        continue
+                
+                if not attachment.longFilename.lower().endswith(valid_extensions):
+                        print("not valid ext skipping: " + attachment.longFilename)
+                        continue
+                attachment_name = attachment.longFilename
+                attachment_name_without_extension = os.path.splitext(attachment_name)[0]
+                attachments_from_email_library.append(attachment_name_without_extension)
+
+
+        except Exception as e:
+            print("An error occured processing: ", e)
+            traceback.print_exc()
+            log_error(item=item, error_message=e, error_logs=error_logs)
+    
+    print("ATTACHMENTS FROM EMAIL LIBRARY")
+    print(attachments_from_email_library[:10])
+    print("LENGTH OF ATTACHMENTS FROM EMAIL LIBRARY", len(attachments_from_email_library))
+    print("\n\n===FINDING ATTACHMENTS IN OUTGOING FOLDERS TO MATCH WITH EMAIL LIBRARY===")
+    for i, task_folder in enumerate(TASK_FOLDERS):
+
+        try:
+            task_drive_id = task_folder['task_drive_id']
+            task_outgoing_folder_id = task_folder['outgoing_folder_id']
+
+            search_results_docx = search_files_in_folder(site_id=SITE_ID, 
+                                    drive_id=task_drive_id, 
+                                    folder_id=task_outgoing_folder_id, 
+                                    query='.docx', headers=headers
+                                    )
+            
+            if search_results_docx:
+                for item in search_results_docx['value']:
+
+                    file_name_without_extension = os.path.splitext(item['name'])[0]
+                    created_by_name = item['createdBy']['user']['displayName']
+                    created_by_email = item['createdBy']['user']['email']
+                    last_modified_by_name = item['lastModifiedBy']['user']['displayName']
+                    last_modified_by_email = item['lastModifiedBy']['user']['email']
+
+                    if file_name_without_extension not in attachments_from_email_library:
+                        print("Attachment not found in Email Library: ", item['name'])
+                        df_data = {
+                            "Attachment Name": item['name'],
+                            "Created By Name": created_by_name,
+                            "Created By Email": created_by_email,
+                            "Last Modified By Name": last_modified_by_name,
+                            "Last Modified By Email": last_modified_by_email
+                        }
+                        dataframes['files_not_found_in_email_library'] = dataframes['files_not_found_in_email_library'].append(
+                            df_data, ignore_index=True)
+
+                    
+            
+            search_results_pptx = search_files_in_folder(site_id=SITE_ID, 
+                                    drive_id=task_drive_id, 
+                                    folder_id=task_outgoing_folder_id, 
+                                    query='.pptx', headers=headers
+                                    )
+
+            if search_results_pptx:
+                for item in search_results_pptx['value']:
+
+                    file_name_without_extension = os.path.splitext(item['name'])[0]
+                    created_by_name = item['createdBy']['user']['displayName']
+                    created_by_email = item['createdBy']['user']['email']
+                    last_modified_by_name = item['lastModifiedBy']['user']['displayName']
+                    last_modified_by_email = item['lastModifiedBy']['user']['email']
+
+                    if file_name_without_extension not in attachments_from_email_library:
+                        print("Attachment not found in Email Library: ", item['name'])
+                        df_data = {
+                            "Attachment Name": item['name'],
+                            "Created By Name": created_by_name,
+                            "Created By Email": created_by_email,
+                            "Last Modified By Name": last_modified_by_name,
+                            "Last Modified By Email": last_modified_by_email
+                        }
+
+                        dataframes['files_not_found_in_email_library'] = dataframes['files_not_found_in_email_library'].append(
+                            df_data, ignore_index=True)
+
+        except Exception as e:
+            print("An error occured processing: ", e)
+            traceback.print_exc()
+            log_error(item=item, error_message=e, error_logs=error_logs)
+    
+                    
+    dataframes['files_not_found_in_email_library'].to_excel(FILE_OUTPUT_NAME_TASK_B, sheet_name='Attachment Not Found', index=False)
+    print("Excel file created successfully for task B") 
+
 
 
 # Function to log errors
@@ -367,7 +564,6 @@ def get_attachments_from_excel(file_path):
 Run the QA Automation processing
 """
 def run_qa_automation_processing(drives_url, headers, refresh_token=None):
-
     dataframes = {
         'dv_filled_in_working_and_outgoing_no_dv_sheet_df': pd.DataFrame(),
         'dv_filled_in_working_and_outgoing_has_filled_dv_sheet_df': pd.DataFrame(),

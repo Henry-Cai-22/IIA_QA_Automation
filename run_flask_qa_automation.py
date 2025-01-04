@@ -1,6 +1,6 @@
 from flask import Flask
 from cred import *
-from utils import *
+from utils.utils import *
 from routes.routes import routes 
 import os
 
